@@ -33,6 +33,7 @@
 #endif
 #ifdef ESP_PLATFORM
 #include "esp_system.h"
+#include "esp_random.h"
 #endif
 
 uint32_t random32(void)
