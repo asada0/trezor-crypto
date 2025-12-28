@@ -55,3 +55,10 @@ target_compile_options(${COMPONENT_LIB} PRIVATE
     "-Wno-stringop-overread"
     "-Wno-array-parameter"
 )
+
+# AES key size definitions (required for aes_encrypt_key function)
+target_compile_definitions(${COMPONENT_LIB} PUBLIC
+    AES_128
+    AES_192
+    AES_VAR
+)
