@@ -1,6 +1,13 @@
 #include "ed25519-donna.h"
 #include "ed25519.h"
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#else
+#define PSRAM_STATIC static
+#endif
+
 /* Calculates nQ where Q is the x-coordinate of a point on the curve
  *
  *   mypublic: the packed little endian x coordinate of the resulting curve point
@@ -9,11 +16,14 @@
  */
 
 void curve25519_scalarmult_donna(curve25519_key mypublic, const curve25519_key n, const curve25519_key basepoint) {
-	bignum25519 nqpqx = {1}, nqpqz = {0}, nqz = {1}, nqx;
-	bignum25519 q, qx, qpqx, qqx, zzz, zmone;
+	PSRAM_STATIC bignum25519 nqpqx, nqpqz, nqz, nqx;
+	PSRAM_STATIC bignum25519 q, qx, qpqx, qqx, zzz, zmone;
 	size_t bit, lastbit;
 	int32_t i;
 
+	memset(nqpqx, 0, sizeof(bignum25519)); nqpqx[0] = 1;
+	memset(nqpqz, 0, sizeof(bignum25519));
+	memset(nqz, 0, sizeof(bignum25519)); nqz[0] = 1;
 	curve25519_expand(q, basepoint);
 	curve25519_copy(nqx, q);
 

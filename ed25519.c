@@ -19,6 +19,13 @@
 
 #include "ed25519-hash-custom.h"
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#else
+#define PSRAM_STATIC static
+#endif
+
 /*
 	Generates a (extsk[0..31]) and aExt (extsk[32..63])
 */
@@ -43,7 +50,7 @@ ed25519_hram(hash_512bits hram, const ed25519_signature RS, const ed25519_public
 void
 ED25519_FN(ed25519_publickey) (const ed25519_secret_key sk, ed25519_public_key pk) {
 	bignum256modm a;
-	ge25519 ALIGN(16) A;
+	PSRAM_STATIC ge25519 ALIGN(16) A;
 	hash_512bits extsk;
 
 	/* A = aB */
@@ -81,10 +88,11 @@ ED25519_FN(ed25519_cosi_sign) (const unsigned char *m, size_t mlen, const ed2551
 
 void
 ED25519_FN(ed25519_sign) (const unsigned char *m, size_t mlen, const ed25519_secret_key sk, const ed25519_public_key pk, ed25519_signature RS) {
-	ed25519_hash_context ctx;
-	bignum256modm r, S, a;
-	ge25519 ALIGN(16) R;
-	hash_512bits extsk, hashr, hram;
+	PSRAM_STATIC ed25519_hash_context ctx;
+	PSRAM_STATIC bignum256modm r, S, a;
+	PSRAM_STATIC ge25519 ALIGN(16) R;
+	hash_512bits extsk;
+	PSRAM_STATIC hash_512bits hashr, hram;
 
 	ed25519_extsk(extsk, sk);
 
@@ -116,8 +124,8 @@ ED25519_FN(ed25519_sign) (const unsigned char *m, size_t mlen, const ed25519_sec
 
 int
 ED25519_FN(ed25519_sign_open) (const unsigned char *m, size_t mlen, const ed25519_public_key pk, const ed25519_signature RS) {
-	ge25519 ALIGN(16) R, A;
-	hash_512bits hash;
+	PSRAM_STATIC ge25519 ALIGN(16) R, A;
+	PSRAM_STATIC hash_512bits hash;
 	bignum256modm hram, S;
 	unsigned char checkR[32];
 
@@ -142,7 +150,7 @@ ED25519_FN(ed25519_sign_open) (const unsigned char *m, size_t mlen, const ed2551
 int
 ED25519_FN(ed25519_scalarmult) (ed25519_public_key res, const ed25519_secret_key sk, const ed25519_public_key pk) {
 	bignum256modm a;
-	ge25519 ALIGN(16) A, P;
+	PSRAM_STATIC ge25519 ALIGN(16) A, P;
 	hash_512bits extsk;
 
 	ed25519_extsk(extsk, sk);
@@ -216,7 +224,7 @@ curve25519_scalarmult_basepoint(curve25519_key pk, const curve25519_key e) {
 	curve25519_key ec;
 	bignum256modm s;
 	bignum25519 ALIGN(16) yplusz, zminusy;
-	ge25519 ALIGN(16) p;
+	PSRAM_STATIC ge25519 ALIGN(16) p;
 	size_t i;
 
 	/* clamp */

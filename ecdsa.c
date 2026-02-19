@@ -28,6 +28,13 @@
 #include <assert.h>
 #include <cryptoaddress.h>
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#else
+#define PSRAM_STATIC static
+#endif
+
 #include "bignum.h"
 #include "rand.h"
 #include "sha2.h"
@@ -238,9 +245,9 @@ void jacobian_to_curve(const jacobian_curve_point *jp, curve_point *p, const big
 }
 
 void point_jacobian_add(const curve_point *p1, jacobian_curve_point *p2, const ecdsa_curve *curve) {
-	bignum256 r, h, r2;
-	bignum256 hcby, hsqx;
-	bignum256 xz, yz, az;
+	PSRAM_STATIC bignum256 r, h, r2;
+	PSRAM_STATIC bignum256 hcby, hsqx;
+	PSRAM_STATIC bignum256 xz, yz, az;
 	int is_doubling;
 	const bignum256 *prime = &curve->prime;
 	int a = curve->a;
@@ -357,7 +364,7 @@ void point_jacobian_add(const curve_point *p1, jacobian_curve_point *p2, const e
 }
 
 void point_jacobian_double(jacobian_curve_point *p, const ecdsa_curve *curve) {
-	bignum256 az4, m, msq, ysq, xysq;
+	PSRAM_STATIC bignum256 az4, m, msq, ysq, xysq;
 	const bignum256 *prime = &curve->prime;
 
 	assert (-3 <= curve->a && curve->a <= 0);
@@ -746,13 +753,13 @@ int ecdsa_sign_double(const ecdsa_curve *curve, HasherType hasher_type, const ui
 int ecdsa_sign_digest(const ecdsa_curve *curve, const uint8_t *priv_key, const uint8_t *digest, uint8_t *sig, uint8_t *pby, int (*is_canonical)(uint8_t by, uint8_t sig[64]))
 {
 	int i;
-	curve_point R;
-	bignum256 k, z, randk;
+	PSRAM_STATIC curve_point R;
+	PSRAM_STATIC bignum256 k, z, randk;
 	bignum256 *s = &R.y;
 	uint8_t by; // signature recovery byte
 
 #if USE_RFC6979
-	rfc6979_state rng;
+	PSRAM_STATIC rfc6979_state rng;
 	init_rfc6979(priv_key, digest, &rng);
 #endif
 
@@ -1052,8 +1059,8 @@ int ecdsa_verify_double(const ecdsa_curve *curve, HasherType hasher_type, const 
 // returns 0 if verification succeeded
 int ecdsa_verify_digest_recover(const ecdsa_curve *curve, uint8_t *pub_key, const uint8_t *sig, const uint8_t *digest, int recid)
 {
-	bignum256 r, s, e;
-	curve_point cp, cp2;
+	PSRAM_STATIC bignum256 r, s, e;
+	PSRAM_STATIC curve_point cp, cp2;
 
 	// read r and s
 	bn_read_be(sig, &r);
@@ -1101,8 +1108,8 @@ int ecdsa_verify_digest_recover(const ecdsa_curve *curve, uint8_t *pub_key, cons
 // returns 0 if verification succeeded
 int ecdsa_verify_digest(const ecdsa_curve *curve, const uint8_t *pub_key, const uint8_t *sig, const uint8_t *digest)
 {
-	curve_point pub, res;
-	bignum256 r, s, z;
+	PSRAM_STATIC curve_point pub, res;
+	PSRAM_STATIC bignum256 r, s, z;
 
 	if (!ecdsa_read_pubkey(curve, pub_key, &pub)) {
 		return 1;

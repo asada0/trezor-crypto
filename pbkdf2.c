@@ -27,6 +27,13 @@
 #include "sha2.h"
 #include "memzero.h"
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#else
+#define PSRAM_STATIC static
+#endif
+
 void pbkdf2_hmac_sha256_Init(PBKDF2_HMAC_SHA256_CTX *pctx, const uint8_t *pass, int passlen, const uint8_t *salt, int saltlen)
 {
 	SHA256_CTX ctx;
@@ -80,7 +87,7 @@ void pbkdf2_hmac_sha256_Final(PBKDF2_HMAC_SHA256_CTX *pctx, uint8_t *key)
 
 void pbkdf2_hmac_sha256(const uint8_t *pass, int passlen, const uint8_t *salt, int saltlen, uint32_t iterations, uint8_t *key)
 {
-	PBKDF2_HMAC_SHA256_CTX pctx;
+	PSRAM_STATIC PBKDF2_HMAC_SHA256_CTX pctx;
 	pbkdf2_hmac_sha256_Init(&pctx, pass, passlen, salt, saltlen);
 	pbkdf2_hmac_sha256_Update(&pctx, iterations);
 	pbkdf2_hmac_sha256_Final(&pctx, key);
@@ -140,7 +147,7 @@ void pbkdf2_hmac_sha512_Final(PBKDF2_HMAC_SHA512_CTX *pctx, uint8_t *key)
 
 void pbkdf2_hmac_sha512(const uint8_t *pass, int passlen, const uint8_t *salt, int saltlen, uint32_t iterations, uint8_t *key)
 {
-	PBKDF2_HMAC_SHA512_CTX pctx;
+	PSRAM_STATIC PBKDF2_HMAC_SHA512_CTX pctx;
 	pbkdf2_hmac_sha512_Init(&pctx, pass, passlen, salt, saltlen);
 	pbkdf2_hmac_sha512_Update(&pctx, iterations);
 	pbkdf2_hmac_sha512_Final(&pctx, key);

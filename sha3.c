@@ -23,6 +23,13 @@
 #include "sha3.h"
 #include "memzero.h"
 
+#ifdef ESP_PLATFORM
+#include "esp_attr.h"
+#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#else
+#define PSRAM_STATIC static
+#endif
+
 #define I64(x) x##LL
 #define ROTL64(qword, n) ((qword) << (n) ^ ((qword) >> (64 - (n))))
 #define le2me_64(x) (x)
@@ -365,7 +372,7 @@ void keccak_Final(SHA3_CTX *ctx, unsigned char* result)
 
 void keccak_256(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	SHA3_CTX ctx;
+	PSRAM_STATIC SHA3_CTX ctx;
 	keccak_256_Init(&ctx);
 	keccak_Update(&ctx, data, len);
 	keccak_Final(&ctx, digest);
@@ -373,7 +380,7 @@ void keccak_256(const unsigned char* data, size_t len, unsigned char* digest)
 
 void keccak_512(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	SHA3_CTX ctx;
+	PSRAM_STATIC SHA3_CTX ctx;
 	keccak_512_Init(&ctx);
 	keccak_Update(&ctx, data, len);
 	keccak_Final(&ctx, digest);
@@ -382,7 +389,7 @@ void keccak_512(const unsigned char* data, size_t len, unsigned char* digest)
 
 void sha3_256(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	SHA3_CTX ctx;
+	PSRAM_STATIC SHA3_CTX ctx;
 	sha3_256_Init(&ctx);
 	sha3_Update(&ctx, data, len);
 	sha3_Final(&ctx, digest);
@@ -390,7 +397,7 @@ void sha3_256(const unsigned char* data, size_t len, unsigned char* digest)
 
 void sha3_512(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	SHA3_CTX ctx;
+	PSRAM_STATIC SHA3_CTX ctx;
 	sha3_512_Init(&ctx);
 	sha3_Update(&ctx, data, len);
 	sha3_Final(&ctx, digest);
