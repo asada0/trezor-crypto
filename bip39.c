@@ -46,6 +46,13 @@ static CONFIDENTIAL struct {
 
 #endif
 
+/* Static buffers for mnemonic_from_data / mnemonic_from_data_indexes return
+ * values. Moved to file scope (from function-local static) on 2026-05-31 to
+ * enable mnemonic_clear() to wipe them — see upstream trezor-firmware
+ * components/trezor-firmware/crypto/bip39.c which uses the same pattern. */
+static CONFIDENTIAL char mnemo[24 * 10];
+static CONFIDENTIAL uint16_t mnemo_idx[24];
+
 const char *mnemonic_generate(int strength)
 {
 	if (strength % 32 || strength < 128 || strength > 256) {
@@ -85,7 +92,8 @@ const char *mnemonic_from_data(const uint8_t *data, int len)
 	memcpy(bits, data, len);
 
 	int mlen = len * 3 / 4;
-	static CONFIDENTIAL char mnemo[24 * 10];
+	/* `mnemo` is file-scope static (see top of file). Caller is expected
+	 * to call mnemonic_clear() once the returned string is consumed. */
 
 	int i, j, idx;
 	char *p = mnemo;
@@ -120,7 +128,8 @@ const uint16_t *mnemonic_from_data_indexes(const uint8_t *data, int len)
 	memcpy(bits, data, len);
 
 	int mlen = len * 3 / 4;
-	static CONFIDENTIAL uint16_t mnemo[24];
+	/* `mnemo_idx` is file-scope static (see top of file). Caller is
+	 * expected to call mnemonic_clear() once consumed. */
 
 	int i, j, idx;
 	for (i = 0; i < mlen; i++) {
@@ -129,11 +138,22 @@ const uint16_t *mnemonic_from_data_indexes(const uint8_t *data, int len)
 			idx <<= 1;
 			idx += (bits[(i * 11 + j) / 8] & (1 << (7 - ((i * 11 + j) % 8)))) > 0;
 		}
-		mnemo[i] = idx;
+		mnemo_idx[i] = idx;
 	}
 	memzero(bits, sizeof(bits));
 
-	return mnemo;
+	return mnemo_idx;
+}
+
+/* Wipe the static return buffers used by mnemonic_from_data and
+ * mnemonic_from_data_indexes. Callers must invoke this once they are done
+ * with the returned pointer; otherwise the BIP39 mnemonic (24-word seed
+ * phrase, the most sensitive data on the device) remains in .bss until
+ * the next call. Matches upstream trezor-firmware's mnemonic_clear(). */
+void mnemonic_clear(void)
+{
+	memzero(mnemo, sizeof(mnemo));
+	memzero(mnemo_idx, sizeof(mnemo_idx));
 }
 
 int mnemonic_check(const char *mnemonic)

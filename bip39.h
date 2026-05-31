@@ -34,6 +34,12 @@ const uint16_t *mnemonic_generate_indexes(int strength);	// strength in bits
 const char *mnemonic_from_data(const uint8_t *data, int len);
 const uint16_t *mnemonic_from_data_indexes(const uint8_t *data, int len);
 
+/* Wipe the static return buffers used by mnemonic_from_data and
+ * mnemonic_from_data_indexes. Callers must invoke this once they are done
+ * with the returned pointer to avoid leaving the BIP39 mnemonic in .bss
+ * until the next call. Matches upstream trezor-firmware's mnemonic_clear(). */
+void mnemonic_clear(void);
+
 int mnemonic_check(const char *mnemonic);
 
 // passphrase must be at most 256 characters or code may crash
