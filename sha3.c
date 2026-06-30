@@ -18,6 +18,7 @@
  */
 
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "sha3.h"
@@ -25,9 +26,10 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
-#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#include "esp_heap_caps.h"
+#define PSRAM_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
 #else
-#define PSRAM_STATIC static
+#define PSRAM_ALLOC(size) malloc(size)
 #endif
 
 #define I64(x) x##LL
@@ -372,33 +374,41 @@ void keccak_Final(SHA3_CTX *ctx, unsigned char* result)
 
 void keccak_256(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	PSRAM_STATIC SHA3_CTX ctx;
-	keccak_256_Init(&ctx);
-	keccak_Update(&ctx, data, len);
-	keccak_Final(&ctx, digest);
+	SHA3_CTX *ctx = (SHA3_CTX *)PSRAM_ALLOC(sizeof(SHA3_CTX));
+	if (!ctx) { if (digest) memzero(digest, SHA3_256_DIGEST_LENGTH); return; }
+	keccak_256_Init(ctx);
+	keccak_Update(ctx, data, len);
+	keccak_Final(ctx, digest); /* _Final memzeros ctx internally */
+	free(ctx);
 }
 
 void keccak_512(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	PSRAM_STATIC SHA3_CTX ctx;
-	keccak_512_Init(&ctx);
-	keccak_Update(&ctx, data, len);
-	keccak_Final(&ctx, digest);
+	SHA3_CTX *ctx = (SHA3_CTX *)PSRAM_ALLOC(sizeof(SHA3_CTX));
+	if (!ctx) { if (digest) memzero(digest, SHA3_512_DIGEST_LENGTH); return; }
+	keccak_512_Init(ctx);
+	keccak_Update(ctx, data, len);
+	keccak_Final(ctx, digest); /* _Final memzeros ctx internally */
+	free(ctx);
 }
 #endif /* USE_KECCAK */
 
 void sha3_256(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	PSRAM_STATIC SHA3_CTX ctx;
-	sha3_256_Init(&ctx);
-	sha3_Update(&ctx, data, len);
-	sha3_Final(&ctx, digest);
+	SHA3_CTX *ctx = (SHA3_CTX *)PSRAM_ALLOC(sizeof(SHA3_CTX));
+	if (!ctx) { if (digest) memzero(digest, SHA3_256_DIGEST_LENGTH); return; }
+	sha3_256_Init(ctx);
+	sha3_Update(ctx, data, len);
+	sha3_Final(ctx, digest); /* _Final memzeros ctx internally */
+	free(ctx);
 }
 
 void sha3_512(const unsigned char* data, size_t len, unsigned char* digest)
 {
-	PSRAM_STATIC SHA3_CTX ctx;
-	sha3_512_Init(&ctx);
-	sha3_Update(&ctx, data, len);
-	sha3_Final(&ctx, digest);
+	SHA3_CTX *ctx = (SHA3_CTX *)PSRAM_ALLOC(sizeof(SHA3_CTX));
+	if (!ctx) { if (digest) memzero(digest, SHA3_512_DIGEST_LENGTH); return; }
+	sha3_512_Init(ctx);
+	sha3_Update(ctx, data, len);
+	sha3_Final(ctx, digest); /* _Final memzeros ctx internally */
+	free(ctx);
 }

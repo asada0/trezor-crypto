@@ -21,6 +21,7 @@
  * OTHER DEALINGS IN THE SOFTWARE.
  */
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "hmac.h"
@@ -29,14 +30,24 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
+#include "esp_heap_caps.h"
 #define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#define PSRAM_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
 #else
 #define PSRAM_STATIC static
+#define PSRAM_ALLOC(size) malloc(size)
 #endif
 
 void hmac_sha256_Init(HMAC_SHA256_CTX *hctx, const uint8_t *key, const uint32_t keylen)
 {
-	static CONFIDENTIAL uint8_t i_key_pad[SHA256_BLOCK_LENGTH];
+	uint8_t *i_key_pad = (uint8_t *)PSRAM_ALLOC(SHA256_BLOCK_LENGTH);
+	if (!i_key_pad) {
+		/* alloc failed: leave hctx in a defined state so a subsequent
+		 * _Update/_Final does not run on uninitialized memory */
+		memzero(hctx, sizeof(HMAC_SHA256_CTX));
+		sha256_Init(&(hctx->ctx));
+		return;
+	}
 	memset(i_key_pad, 0, SHA256_BLOCK_LENGTH);
 	if (keylen > SHA256_BLOCK_LENGTH) {
 		sha256_Raw(key, keylen, i_key_pad);
@@ -49,7 +60,8 @@ void hmac_sha256_Init(HMAC_SHA256_CTX *hctx, const uint8_t *key, const uint32_t 
 	}
 	sha256_Init(&(hctx->ctx));
 	sha256_Update(&(hctx->ctx), i_key_pad, SHA256_BLOCK_LENGTH);
-	memzero(i_key_pad, sizeof(i_key_pad));
+	memzero(i_key_pad, SHA256_BLOCK_LENGTH);
+	free(i_key_pad);
 }
 
 void hmac_sha256_Update(HMAC_SHA256_CTX *hctx, const uint8_t *msg, const uint32_t msglen)
@@ -69,49 +81,65 @@ void hmac_sha256_Final(HMAC_SHA256_CTX *hctx, uint8_t *hmac)
 
 void hmac_sha256(const uint8_t *key, const uint32_t keylen, const uint8_t *msg, const uint32_t msglen, uint8_t *hmac)
 {
-	static CONFIDENTIAL HMAC_SHA256_CTX hctx;
-	hmac_sha256_Init(&hctx, key, keylen);
-	hmac_sha256_Update(&hctx, msg, msglen);
-	hmac_sha256_Final(&hctx, hmac);
+	HMAC_SHA256_CTX *hctx = (HMAC_SHA256_CTX *)PSRAM_ALLOC(sizeof(HMAC_SHA256_CTX));
+	if (!hctx) return;
+	hmac_sha256_Init(hctx, key, keylen);
+	hmac_sha256_Update(hctx, msg, msglen);
+	hmac_sha256_Final(hctx, hmac);
+	memzero(hctx, sizeof(HMAC_SHA256_CTX));
+	free(hctx);
 }
+
+typedef struct {
+	uint32_t key_pad[SHA256_BLOCK_LENGTH/sizeof(uint32_t)];
+	SHA256_CTX context;
+} hmac_sha256_prepare_ws_t;
 
 void hmac_sha256_prepare(const uint8_t *key, const uint32_t keylen, uint32_t *opad_digest, uint32_t *ipad_digest)
 {
-	static CONFIDENTIAL uint32_t key_pad[SHA256_BLOCK_LENGTH/sizeof(uint32_t)];
+	hmac_sha256_prepare_ws_t *ws = (hmac_sha256_prepare_ws_t *)PSRAM_ALLOC(sizeof(hmac_sha256_prepare_ws_t));
+	if (!ws) return;
 
-	memzero(key_pad, sizeof(key_pad));
+	memzero(ws->key_pad, sizeof(ws->key_pad));
 	if (keylen > SHA256_BLOCK_LENGTH) {
-		static CONFIDENTIAL SHA256_CTX context;
-		sha256_Init(&context);
-		sha256_Update(&context, key, keylen);
-		sha256_Final(&context, (uint8_t*)key_pad);
+		sha256_Init(&ws->context);
+		sha256_Update(&ws->context, key, keylen);
+		sha256_Final(&ws->context, (uint8_t*)ws->key_pad);
 	} else {
-		memcpy(key_pad, key, keylen);
+		memcpy(ws->key_pad, key, keylen);
 	}
 
 	/* compute o_key_pad and its digest */
 	for (int i = 0; i < SHA256_BLOCK_LENGTH/(int)sizeof(uint32_t); i++) {
 		uint32_t data;
 #if BYTE_ORDER == LITTLE_ENDIAN
-		REVERSE32(key_pad[i], data);
+		REVERSE32(ws->key_pad[i], data);
 #else
-		data = key_pad[i];
+		data = ws->key_pad[i];
 #endif
-		key_pad[i] = data ^ 0x5c5c5c5c;
+		ws->key_pad[i] = data ^ 0x5c5c5c5c;
 	}
-	sha256_Transform(sha256_initial_hash_value, key_pad, opad_digest);
+	sha256_Transform(sha256_initial_hash_value, ws->key_pad, opad_digest);
 
 	/* convert o_key_pad to i_key_pad and compute its digest */
 	for (int i = 0; i < SHA256_BLOCK_LENGTH/(int)sizeof(uint32_t); i++) {
-		key_pad[i] = key_pad[i] ^ 0x5c5c5c5c ^ 0x36363636;
+		ws->key_pad[i] = ws->key_pad[i] ^ 0x5c5c5c5c ^ 0x36363636;
 	}
-	sha256_Transform(sha256_initial_hash_value, key_pad, ipad_digest);
-	memzero(key_pad, sizeof(key_pad));
+	sha256_Transform(sha256_initial_hash_value, ws->key_pad, ipad_digest);
+	memzero(ws, sizeof(hmac_sha256_prepare_ws_t));
+	free(ws);
 }
 
 void hmac_sha512_Init(HMAC_SHA512_CTX *hctx, const uint8_t *key, const uint32_t keylen)
 {
-	static CONFIDENTIAL uint8_t i_key_pad[SHA512_BLOCK_LENGTH];
+	uint8_t *i_key_pad = (uint8_t *)PSRAM_ALLOC(SHA512_BLOCK_LENGTH);
+	if (!i_key_pad) {
+		/* alloc failed: leave hctx in a defined state so a subsequent
+		 * _Update/_Final does not run on uninitialized memory */
+		memzero(hctx, sizeof(HMAC_SHA512_CTX));
+		sha512_Init(&(hctx->ctx));
+		return;
+	}
 	memset(i_key_pad, 0, SHA512_BLOCK_LENGTH);
 	if (keylen > SHA512_BLOCK_LENGTH) {
 		sha512_Raw(key, keylen, i_key_pad);
@@ -124,7 +152,8 @@ void hmac_sha512_Init(HMAC_SHA512_CTX *hctx, const uint8_t *key, const uint32_t 
 	}
 	sha512_Init(&(hctx->ctx));
 	sha512_Update(&(hctx->ctx), i_key_pad, SHA512_BLOCK_LENGTH);
-	memzero(i_key_pad, sizeof(i_key_pad));
+	memzero(i_key_pad, SHA512_BLOCK_LENGTH);
+	free(i_key_pad);
 }
 
 void hmac_sha512_Update(HMAC_SHA512_CTX *hctx, const uint8_t *msg, const uint32_t msglen)
@@ -144,42 +173,51 @@ void hmac_sha512_Final(HMAC_SHA512_CTX *hctx, uint8_t *hmac)
 
 void hmac_sha512(const uint8_t *key, const uint32_t keylen, const uint8_t *msg, const uint32_t msglen, uint8_t *hmac)
 {
-	PSRAM_STATIC HMAC_SHA512_CTX hctx;
-	hmac_sha512_Init(&hctx, key, keylen);
-	hmac_sha512_Update(&hctx, msg, msglen);
-	hmac_sha512_Final(&hctx, hmac);
+	HMAC_SHA512_CTX *hctx = (HMAC_SHA512_CTX *)PSRAM_ALLOC(sizeof(HMAC_SHA512_CTX));
+	if (!hctx) return;
+	hmac_sha512_Init(hctx, key, keylen);
+	hmac_sha512_Update(hctx, msg, msglen);
+	hmac_sha512_Final(hctx, hmac);
+	memzero(hctx, sizeof(HMAC_SHA512_CTX));
+	free(hctx);
 }
+
+typedef struct {
+	uint64_t key_pad[SHA512_BLOCK_LENGTH/sizeof(uint64_t)];
+	SHA512_CTX context;
+} hmac_sha512_prepare_ws_t;
 
 void hmac_sha512_prepare(const uint8_t *key, const uint32_t keylen, uint64_t *opad_digest, uint64_t *ipad_digest)
 {
-	static CONFIDENTIAL uint64_t key_pad[SHA512_BLOCK_LENGTH/sizeof(uint64_t)];
+	hmac_sha512_prepare_ws_t *ws = (hmac_sha512_prepare_ws_t *)PSRAM_ALLOC(sizeof(hmac_sha512_prepare_ws_t));
+	if (!ws) return;
 
-	memzero(key_pad, sizeof(key_pad));
+	memzero(ws->key_pad, sizeof(ws->key_pad));
 	if (keylen > SHA512_BLOCK_LENGTH) {
-		static CONFIDENTIAL SHA512_CTX context;
-		sha512_Init(&context);
-		sha512_Update(&context, key, keylen);
-		sha512_Final(&context, (uint8_t*)key_pad);
+		sha512_Init(&ws->context);
+		sha512_Update(&ws->context, key, keylen);
+		sha512_Final(&ws->context, (uint8_t*)ws->key_pad);
 	} else {
-		memcpy(key_pad, key, keylen);
+		memcpy(ws->key_pad, key, keylen);
 	}
 
 	/* compute o_key_pad and its digest */
 	for (int i = 0; i < SHA512_BLOCK_LENGTH/(int)sizeof(uint64_t); i++) {
 		uint64_t data;
 #if BYTE_ORDER == LITTLE_ENDIAN
-		REVERSE64(key_pad[i], data);
+		REVERSE64(ws->key_pad[i], data);
 #else
-		data = key_pad[i];
+		data = ws->key_pad[i];
 #endif
-		key_pad[i] = data ^ 0x5c5c5c5c5c5c5c5c;
+		ws->key_pad[i] = data ^ 0x5c5c5c5c5c5c5c5c;
 	}
-	sha512_Transform(sha512_initial_hash_value, key_pad, opad_digest);
+	sha512_Transform(sha512_initial_hash_value, ws->key_pad, opad_digest);
 
 	/* convert o_key_pad to i_key_pad and compute its digest */
 	for (int i = 0; i < SHA512_BLOCK_LENGTH/(int)sizeof(uint64_t); i++) {
-		key_pad[i] = key_pad[i] ^ 0x5c5c5c5c5c5c5c5c ^ 0x3636363636363636;
+		ws->key_pad[i] = ws->key_pad[i] ^ 0x5c5c5c5c5c5c5c5c ^ 0x3636363636363636;
 	}
-	sha512_Transform(sha512_initial_hash_value, key_pad, ipad_digest);
-	memzero(key_pad, sizeof(key_pad));
+	sha512_Transform(sha512_initial_hash_value, ws->key_pad, ipad_digest);
+	memzero(ws, sizeof(hmac_sha512_prepare_ws_t));
+	free(ws);
 }

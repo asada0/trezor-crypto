@@ -29,9 +29,11 @@
 
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
-#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#include "esp_heap_caps.h"
+#define PSRAM_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
 #else
-#define PSRAM_STATIC static
+#include <stdlib.h>
+#define PSRAM_ALLOC(size) malloc(size)
 #endif
 
 void pbkdf2_hmac_sha256_Init(PBKDF2_HMAC_SHA256_CTX *pctx, const uint8_t *pass, int passlen, const uint8_t *salt, int saltlen)
@@ -87,10 +89,13 @@ void pbkdf2_hmac_sha256_Final(PBKDF2_HMAC_SHA256_CTX *pctx, uint8_t *key)
 
 void pbkdf2_hmac_sha256(const uint8_t *pass, int passlen, const uint8_t *salt, int saltlen, uint32_t iterations, uint8_t *key)
 {
-	PSRAM_STATIC PBKDF2_HMAC_SHA256_CTX pctx;
-	pbkdf2_hmac_sha256_Init(&pctx, pass, passlen, salt, saltlen);
-	pbkdf2_hmac_sha256_Update(&pctx, iterations);
-	pbkdf2_hmac_sha256_Final(&pctx, key);
+	PBKDF2_HMAC_SHA256_CTX *pctx = (PBKDF2_HMAC_SHA256_CTX *)PSRAM_ALLOC(sizeof(PBKDF2_HMAC_SHA256_CTX));
+	if (!pctx) return;
+	pbkdf2_hmac_sha256_Init(pctx, pass, passlen, salt, saltlen);
+	pbkdf2_hmac_sha256_Update(pctx, iterations);
+	pbkdf2_hmac_sha256_Final(pctx, key);
+	memzero(pctx, sizeof(PBKDF2_HMAC_SHA256_CTX));
+	free(pctx);
 }
 
 void pbkdf2_hmac_sha512_Init(PBKDF2_HMAC_SHA512_CTX *pctx, const uint8_t *pass, int passlen, const uint8_t *salt, int saltlen)
@@ -147,8 +152,11 @@ void pbkdf2_hmac_sha512_Final(PBKDF2_HMAC_SHA512_CTX *pctx, uint8_t *key)
 
 void pbkdf2_hmac_sha512(const uint8_t *pass, int passlen, const uint8_t *salt, int saltlen, uint32_t iterations, uint8_t *key)
 {
-	PSRAM_STATIC PBKDF2_HMAC_SHA512_CTX pctx;
-	pbkdf2_hmac_sha512_Init(&pctx, pass, passlen, salt, saltlen);
-	pbkdf2_hmac_sha512_Update(&pctx, iterations);
-	pbkdf2_hmac_sha512_Final(&pctx, key);
+	PBKDF2_HMAC_SHA512_CTX *pctx = (PBKDF2_HMAC_SHA512_CTX *)PSRAM_ALLOC(sizeof(PBKDF2_HMAC_SHA512_CTX));
+	if (!pctx) return;
+	pbkdf2_hmac_sha512_Init(pctx, pass, passlen, salt, saltlen);
+	pbkdf2_hmac_sha512_Update(pctx, iterations);
+	pbkdf2_hmac_sha512_Final(pctx, key);
+	memzero(pctx, sizeof(PBKDF2_HMAC_SHA512_CTX));
+	free(pctx);
 }

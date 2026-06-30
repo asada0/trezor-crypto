@@ -1,12 +1,19 @@
 #include "ed25519-donna.h"
 #include "ed25519.h"
+#include "memzero.h"
 
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
-#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#include "esp_heap_caps.h"
+#define PSRAM_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
 #else
-#define PSRAM_STATIC static
+#define PSRAM_ALLOC(size) malloc(size)
 #endif
+
+typedef struct {
+	bignum25519 nqpqx, nqpqz, nqz, nqx;
+	bignum25519 q, qx, qpqx, qqx, zzz, zmone;
+} curve25519_scalarmult_donna_ws_t;
 
 /* Calculates nQ where Q is the x-coordinate of a point on the curve
  *
@@ -16,16 +23,16 @@
  */
 
 void curve25519_scalarmult_donna(curve25519_key mypublic, const curve25519_key n, const curve25519_key basepoint) {
-	PSRAM_STATIC bignum25519 nqpqx, nqpqz, nqz, nqx;
-	PSRAM_STATIC bignum25519 q, qx, qpqx, qqx, zzz, zmone;
+	curve25519_scalarmult_donna_ws_t *ws = (curve25519_scalarmult_donna_ws_t *)PSRAM_ALLOC(sizeof(curve25519_scalarmult_donna_ws_t));
+	if (!ws) return;
 	size_t bit, lastbit;
 	int32_t i;
 
-	memset(nqpqx, 0, sizeof(bignum25519)); nqpqx[0] = 1;
-	memset(nqpqz, 0, sizeof(bignum25519));
-	memset(nqz, 0, sizeof(bignum25519)); nqz[0] = 1;
-	curve25519_expand(q, basepoint);
-	curve25519_copy(nqx, q);
+	memset(ws->nqpqx, 0, sizeof(bignum25519)); ws->nqpqx[0] = 1;
+	memset(ws->nqpqz, 0, sizeof(bignum25519));
+	memset(ws->nqz, 0, sizeof(bignum25519)); ws->nqz[0] = 1;
+	curve25519_expand(ws->q, basepoint);
+	curve25519_copy(ws->nqx, ws->q);
 
 	/* bit 255 is always 0, and bit 254 is always 1, so skip bit 255 and
 	   start pre-swapped on bit 254 */
@@ -33,45 +40,48 @@ void curve25519_scalarmult_donna(curve25519_key mypublic, const curve25519_key n
 
 	/* we are doing bits 254..3 in the loop, but are swapping in bits 253..2 */
 	for (i = 253; i >= 2; i--) {
-		curve25519_add(qx, nqx, nqz);
-		curve25519_sub(nqz, nqx, nqz);
-		curve25519_add(qpqx, nqpqx, nqpqz);
-		curve25519_sub(nqpqz, nqpqx, nqpqz);
-		curve25519_mul(nqpqx, qpqx, nqz);
-		curve25519_mul(nqpqz, qx, nqpqz);
-		curve25519_add(qqx, nqpqx, nqpqz);
-		curve25519_sub(nqpqz, nqpqx, nqpqz);
-		curve25519_square(nqpqz, nqpqz);
-		curve25519_square(nqpqx, qqx);
-		curve25519_mul(nqpqz, nqpqz, q);
-		curve25519_square(qx, qx);
-		curve25519_square(nqz, nqz);
-		curve25519_mul(nqx, qx, nqz);
-		curve25519_sub(nqz, qx, nqz);
-		curve25519_scalar_product(zzz, nqz, 121665);
-		curve25519_add(zzz, zzz, qx);
-		curve25519_mul(nqz, nqz, zzz);
+		curve25519_add(ws->qx, ws->nqx, ws->nqz);
+		curve25519_sub(ws->nqz, ws->nqx, ws->nqz);
+		curve25519_add(ws->qpqx, ws->nqpqx, ws->nqpqz);
+		curve25519_sub(ws->nqpqz, ws->nqpqx, ws->nqpqz);
+		curve25519_mul(ws->nqpqx, ws->qpqx, ws->nqz);
+		curve25519_mul(ws->nqpqz, ws->qx, ws->nqpqz);
+		curve25519_add(ws->qqx, ws->nqpqx, ws->nqpqz);
+		curve25519_sub(ws->nqpqz, ws->nqpqx, ws->nqpqz);
+		curve25519_square(ws->nqpqz, ws->nqpqz);
+		curve25519_square(ws->nqpqx, ws->qqx);
+		curve25519_mul(ws->nqpqz, ws->nqpqz, ws->q);
+		curve25519_square(ws->qx, ws->qx);
+		curve25519_square(ws->nqz, ws->nqz);
+		curve25519_mul(ws->nqx, ws->qx, ws->nqz);
+		curve25519_sub(ws->nqz, ws->qx, ws->nqz);
+		curve25519_scalar_product(ws->zzz, ws->nqz, 121665);
+		curve25519_add(ws->zzz, ws->zzz, ws->qx);
+		curve25519_mul(ws->nqz, ws->nqz, ws->zzz);
 
 		bit = (n[i/8] >> (i & 7)) & 1;
-		curve25519_swap_conditional(nqx, nqpqx, bit ^ lastbit);
-		curve25519_swap_conditional(nqz, nqpqz, bit ^ lastbit);
+		curve25519_swap_conditional(ws->nqx, ws->nqpqx, bit ^ lastbit);
+		curve25519_swap_conditional(ws->nqz, ws->nqpqz, bit ^ lastbit);
 		lastbit = bit;
 	}
 
 	/* the final 3 bits are always zero, so we only need to double */
 	for (i = 0; i < 3; i++) {
-		curve25519_add(qx, nqx, nqz);
-		curve25519_sub(nqz, nqx, nqz);
-		curve25519_square(qx, qx);
-		curve25519_square(nqz, nqz);
-		curve25519_mul(nqx, qx, nqz);
-		curve25519_sub(nqz, qx, nqz);
-		curve25519_scalar_product(zzz, nqz, 121665);
-		curve25519_add(zzz, zzz, qx);
-		curve25519_mul(nqz, nqz, zzz);
+		curve25519_add(ws->qx, ws->nqx, ws->nqz);
+		curve25519_sub(ws->nqz, ws->nqx, ws->nqz);
+		curve25519_square(ws->qx, ws->qx);
+		curve25519_square(ws->nqz, ws->nqz);
+		curve25519_mul(ws->nqx, ws->qx, ws->nqz);
+		curve25519_sub(ws->nqz, ws->qx, ws->nqz);
+		curve25519_scalar_product(ws->zzz, ws->nqz, 121665);
+		curve25519_add(ws->zzz, ws->zzz, ws->qx);
+		curve25519_mul(ws->nqz, ws->nqz, ws->zzz);
 	}
 
-	curve25519_recip(zmone, nqz);
-	curve25519_mul(nqz, nqx, zmone);
-	curve25519_contract(mypublic, nqz);
+	curve25519_recip(ws->zmone, ws->nqz);
+	curve25519_mul(ws->nqz, ws->nqx, ws->zmone);
+	curve25519_contract(mypublic, ws->nqz);
+
+	memzero(ws, sizeof(curve25519_scalarmult_donna_ws_t));
+	free(ws);
 }

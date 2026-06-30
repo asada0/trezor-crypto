@@ -19,11 +19,14 @@
 
 #include "ed25519-hash-custom.h"
 
+#include "memzero.h"
+
 #ifdef ESP_PLATFORM
 #include "esp_attr.h"
-#define PSRAM_STATIC static EXT_RAM_BSS_ATTR
+#include "esp_heap_caps.h"
+#define PSRAM_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
 #else
-#define PSRAM_STATIC static
+#define PSRAM_ALLOC(size) malloc(size)
 #endif
 
 /*
@@ -50,14 +53,20 @@ ed25519_hram(hash_512bits hram, const ed25519_signature RS, const ed25519_public
 void
 ED25519_FN(ed25519_publickey) (const ed25519_secret_key sk, ed25519_public_key pk) {
 	bignum256modm a;
-	PSRAM_STATIC ge25519 ALIGN(16) A;
+	ge25519 ALIGN(16) *A = (ge25519 *)PSRAM_ALLOC(sizeof(ge25519));
+	if (!A) return;
 	hash_512bits extsk;
 
 	/* A = aB */
 	ed25519_extsk(extsk, sk);
 	expand256_modm(a, extsk, 32);
-	ge25519_scalarmult_base_niels(&A, ge25519_niels_base_multiples, a);
-	ge25519_pack(pk, &A);
+	ge25519_scalarmult_base_niels(A, ge25519_niels_base_multiples, a);
+	ge25519_pack(pk, A);
+
+	memzero(a, sizeof(a));
+	memzero(extsk, sizeof(extsk));
+	memzero(A, sizeof(*A));
+	free(A);
 }
 
 void
@@ -86,84 +95,120 @@ ED25519_FN(ed25519_cosi_sign) (const unsigned char *m, size_t mlen, const ed2551
 	contract256_modm(sig, S);
 }
 
+typedef struct {
+	ed25519_hash_context ctx;
+	bignum256modm r, S, a;
+	ge25519 ALIGN(16) R;
+	hash_512bits hashr, hram;
+} ed25519_sign_ws_t;
+
 void
 ED25519_FN(ed25519_sign) (const unsigned char *m, size_t mlen, const ed25519_secret_key sk, const ed25519_public_key pk, ed25519_signature RS) {
-	PSRAM_STATIC ed25519_hash_context ctx;
-	PSRAM_STATIC bignum256modm r, S, a;
-	PSRAM_STATIC ge25519 ALIGN(16) R;
+	ed25519_sign_ws_t *ws = (ed25519_sign_ws_t *)PSRAM_ALLOC(sizeof(ed25519_sign_ws_t));
+	if (!ws) return;
 	hash_512bits extsk;
-	PSRAM_STATIC hash_512bits hashr, hram;
 
 	ed25519_extsk(extsk, sk);
 
 	/* r = H(aExt[32..64], m) */
-	ed25519_hash_init(&ctx);
-	ed25519_hash_update(&ctx, extsk + 32, 32);
-	ed25519_hash_update(&ctx, m, mlen);
-	ed25519_hash_final(&ctx, hashr);
-	expand256_modm(r, hashr, 64);
+	ed25519_hash_init(&ws->ctx);
+	ed25519_hash_update(&ws->ctx, extsk + 32, 32);
+	ed25519_hash_update(&ws->ctx, m, mlen);
+	ed25519_hash_final(&ws->ctx, ws->hashr);
+	expand256_modm(ws->r, ws->hashr, 64);
 
 	/* R = rB */
-	ge25519_scalarmult_base_niels(&R, ge25519_niels_base_multiples, r);
-	ge25519_pack(RS, &R);
+	ge25519_scalarmult_base_niels(&ws->R, ge25519_niels_base_multiples, ws->r);
+	ge25519_pack(RS, &ws->R);
 
 	/* S = H(R,A,m).. */
-	ed25519_hram(hram, RS, pk, m, mlen);
-	expand256_modm(S, hram, 64);
+	ed25519_hram(ws->hram, RS, pk, m, mlen);
+	expand256_modm(ws->S, ws->hram, 64);
 
 	/* S = H(R,A,m)a */
-	expand256_modm(a, extsk, 32);
-	mul256_modm(S, S, a);
+	expand256_modm(ws->a, extsk, 32);
+	mul256_modm(ws->S, ws->S, ws->a);
 
 	/* S = (r + H(R,A,m)a) */
-	add256_modm(S, S, r);
+	add256_modm(ws->S, ws->S, ws->r);
 
 	/* S = (r + H(R,A,m)a) mod L */
-	contract256_modm(RS + 32, S);
+	contract256_modm(RS + 32, ws->S);
+
+	memzero(extsk, sizeof(extsk));
+	memzero(ws, sizeof(*ws));
+	free(ws);
 }
+
+typedef struct {
+	ge25519 ALIGN(16) R, A;
+	hash_512bits hash;
+} ed25519_sign_open_ws_t;
 
 int
 ED25519_FN(ed25519_sign_open) (const unsigned char *m, size_t mlen, const ed25519_public_key pk, const ed25519_signature RS) {
-	PSRAM_STATIC ge25519 ALIGN(16) R, A;
-	PSRAM_STATIC hash_512bits hash;
+	int result = -1;
+	ed25519_sign_open_ws_t *ws = (ed25519_sign_open_ws_t *)PSRAM_ALLOC(sizeof(ed25519_sign_open_ws_t));
+	if (!ws) return -1;
 	bignum256modm hram, S;
 	unsigned char checkR[32];
 
-	if ((RS[63] & 224) || !ge25519_unpack_negative_vartime(&A, pk))
-		return -1;
+	if ((RS[63] & 224) || !ge25519_unpack_negative_vartime(&ws->A, pk)) {
+		result = -1;
+		goto cleanup;
+	}
 
 	/* hram = H(R,A,m) */
-	ed25519_hram(hash, RS, pk, m, mlen);
-	expand256_modm(hram, hash, 64);
+	ed25519_hram(ws->hash, RS, pk, m, mlen);
+	expand256_modm(hram, ws->hash, 64);
 
 	/* S */
 	expand256_modm(S, RS + 32, 32);
 
 	/* SB - H(R,A,m)A */
-	ge25519_double_scalarmult_vartime(&R, &A, hram, S);
-	ge25519_pack(checkR, &R);
+	ge25519_double_scalarmult_vartime(&ws->R, &ws->A, hram, S);
+	ge25519_pack(checkR, &ws->R);
 
 	/* check that R = SB - H(R,A,m)A */
-	return ed25519_verify(RS, checkR, 32) ? 0 : -1;
+	result = ed25519_verify(RS, checkR, 32) ? 0 : -1;
+
+cleanup:
+	memzero(ws, sizeof(*ws));
+	free(ws);
+	return result;
 }
+
+typedef struct {
+	ge25519 ALIGN(16) A, P;
+} ed25519_scalarmult_ws_t;
 
 int
 ED25519_FN(ed25519_scalarmult) (ed25519_public_key res, const ed25519_secret_key sk, const ed25519_public_key pk) {
+	int result = 0;
 	bignum256modm a;
-	PSRAM_STATIC ge25519 ALIGN(16) A, P;
+	ed25519_scalarmult_ws_t *ws = (ed25519_scalarmult_ws_t *)PSRAM_ALLOC(sizeof(ed25519_scalarmult_ws_t));
+	if (!ws) return -1;
 	hash_512bits extsk;
 
 	ed25519_extsk(extsk, sk);
 	expand256_modm(a, extsk, 32);
 
-	if (!ge25519_unpack_negative_vartime(&P, pk)) {
-		return -1;
+	if (!ge25519_unpack_negative_vartime(&ws->P, pk)) {
+		result = -1;
+		goto cleanup;
 	}
 
-	ge25519_scalarmult(&A, &P, a);
-	curve25519_neg(A.x, A.x);
-	ge25519_pack(res, &A);
-	return 0;
+	ge25519_scalarmult(&ws->A, &ws->P, a);
+	curve25519_neg(ws->A.x, ws->A.x);
+	ge25519_pack(res, &ws->A);
+	result = 0;
+
+cleanup:
+	memzero(a, sizeof(a));
+	memzero(extsk, sizeof(extsk));
+	memzero(ws, sizeof(*ws));
+	free(ws);
+	return result;
 }
 
 
@@ -224,7 +269,8 @@ curve25519_scalarmult_basepoint(curve25519_key pk, const curve25519_key e) {
 	curve25519_key ec;
 	bignum256modm s;
 	bignum25519 ALIGN(16) yplusz, zminusy;
-	PSRAM_STATIC ge25519 ALIGN(16) p;
+	ge25519 ALIGN(16) *p = (ge25519 *)PSRAM_ALLOC(sizeof(ge25519));
+	if (!p) return;
 	size_t i;
 
 	/* clamp */
@@ -236,14 +282,17 @@ curve25519_scalarmult_basepoint(curve25519_key pk, const curve25519_key e) {
 	expand_raw256_modm(s, ec);
 
 	/* scalar * basepoint */
-	ge25519_scalarmult_base_niels(&p, ge25519_niels_base_multiples, s);
+	ge25519_scalarmult_base_niels(p, ge25519_niels_base_multiples, s);
 
 	/* u = (y + z) / (z - y) */
-	curve25519_add(yplusz, p.y, p.z);
-	curve25519_sub(zminusy, p.z, p.y);
+	curve25519_add(yplusz, p->y, p->z);
+	curve25519_sub(zminusy, p->z, p->y);
 	curve25519_recip(zminusy, zminusy);
 	curve25519_mul(yplusz, yplusz, zminusy);
 	curve25519_contract(pk, yplusz);
+
+	memzero(p, sizeof(*p));
+	free(p);
 }
 
 void
