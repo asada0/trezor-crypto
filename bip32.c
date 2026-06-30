@@ -25,6 +25,14 @@
 #include <cryptoaddress.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
+
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#define PSRAM_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
+#else
+#define PSRAM_ALLOC(size) malloc(size)
+#endif
 
 #include "aes/aes.h"
 #include "bignum.h"
@@ -124,40 +132,51 @@ int hdnode_from_xprv(uint32_t depth, uint32_t child_num, const uint8_t *chain_co
 	return 1;
 }
 
+typedef struct {
+	uint8_t I[32 + 32];
+	HMAC_SHA512_CTX ctx;
+} hdnode_from_seed_ws_t;
+
 int hdnode_from_seed(const uint8_t *seed, int seed_len, const char* curve, HDNode *out)
 {
-	static CONFIDENTIAL uint8_t I[32 + 32];
+	int result = 0;
 	memset(out, 0, sizeof(HDNode));
+	hdnode_from_seed_ws_t *ws = (hdnode_from_seed_ws_t *)PSRAM_ALLOC(sizeof(hdnode_from_seed_ws_t));
+	if (!ws) return 0;
 	out->depth = 0;
 	out->child_num = 0;
 	out->curve = get_curve_by_name(curve);
 	if (out->curve == 0) {
-		return 0;
+		result = 0;
+		goto cleanup;
 	}
-	static CONFIDENTIAL HMAC_SHA512_CTX ctx;
-	hmac_sha512_Init(&ctx, (const uint8_t*) out->curve->bip32_name, strlen(out->curve->bip32_name));
-	hmac_sha512_Update(&ctx, seed, seed_len);
-	hmac_sha512_Final(&ctx, I);
+	hmac_sha512_Init(&ws->ctx, (const uint8_t*) out->curve->bip32_name, strlen(out->curve->bip32_name));
+	hmac_sha512_Update(&ws->ctx, seed, seed_len);
+	hmac_sha512_Final(&ws->ctx, ws->I);
 
 	if (out->curve->params) {
 		bignum256 a;
 		while (true) {
-			bn_read_be(I, &a);
+			bn_read_be(ws->I, &a);
 			if (!bn_is_zero(&a) // != 0
 				&& bn_is_less(&a, &out->curve->params->order)) { // < order
 				break;
 			}
-			hmac_sha512_Init(&ctx, (const uint8_t*) out->curve->bip32_name, strlen(out->curve->bip32_name));
-			hmac_sha512_Update(&ctx, I, sizeof(I));
-			hmac_sha512_Final(&ctx, I);
+			hmac_sha512_Init(&ws->ctx, (const uint8_t*) out->curve->bip32_name, strlen(out->curve->bip32_name));
+			hmac_sha512_Update(&ws->ctx, ws->I, sizeof(ws->I));
+			hmac_sha512_Final(&ws->ctx, ws->I);
 		}
 		memzero(&a, sizeof(a));
 	}
-	memcpy(out->private_key, I, 32);
-	memcpy(out->chain_code, I + 32, 32);
+	memcpy(out->private_key, ws->I, 32);
+	memcpy(out->chain_code, ws->I + 32, 32);
 	memzero(out->public_key, sizeof(out->public_key));
-	memzero(I, sizeof(I));
-	return 1;
+	result = 1;
+
+cleanup:
+	memzero(ws, sizeof(*ws));
+	free(ws);
+	return result;
 }
 
 uint32_t hdnode_fingerprint(HDNode *node)
@@ -173,71 +192,78 @@ uint32_t hdnode_fingerprint(HDNode *node)
 	return fingerprint;
 }
 
+typedef struct {
+	uint8_t data[1 + 32 + 4];
+	uint8_t I[32 + 32];
+	bignum256 a, b;
+	HMAC_SHA512_CTX ctx;
+} hdnode_private_ckd_ws_t;
+
 int hdnode_private_ckd(HDNode *inout, uint32_t i)
 {
-	static CONFIDENTIAL uint8_t data[1 + 32 + 4];
-	static CONFIDENTIAL uint8_t I[32 + 32];
-	static CONFIDENTIAL bignum256 a, b;
+	int result = 0;
+	hdnode_private_ckd_ws_t *ws = (hdnode_private_ckd_ws_t *)PSRAM_ALLOC(sizeof(hdnode_private_ckd_ws_t));
+	if (!ws) return 0;
 
 	if (i & 0x80000000) { // private derivation
-		data[0] = 0;
-		memcpy(data + 1, inout->private_key, 32);
+		ws->data[0] = 0;
+		memcpy(ws->data + 1, inout->private_key, 32);
 	} else { // public derivation
 		if (!inout->curve->params) {
-			return 0;
+			result = 0;
+			goto cleanup;
 		}
 		hdnode_fill_public_key(inout);
-		memcpy(data, inout->public_key, 33);
+		memcpy(ws->data, inout->public_key, 33);
 	}
-	write_be(data + 33, i);
+	write_be(ws->data + 33, i);
 
-	bn_read_be(inout->private_key, &a);
+	bn_read_be(inout->private_key, &ws->a);
 
-	static CONFIDENTIAL HMAC_SHA512_CTX ctx;
-	hmac_sha512_Init(&ctx, inout->chain_code, 32);
-	hmac_sha512_Update(&ctx, data, sizeof(data));
-	hmac_sha512_Final(&ctx, I);
+	hmac_sha512_Init(&ws->ctx, inout->chain_code, 32);
+	hmac_sha512_Update(&ws->ctx, ws->data, sizeof(ws->data));
+	hmac_sha512_Final(&ws->ctx, ws->I);
 
 	if (inout->curve->params) {
 		while (true) {
 			bool failed = false;
-			bn_read_be(I, &b);
-			if (!bn_is_less(&b, &inout->curve->params->order)) { // >= order
+			bn_read_be(ws->I, &ws->b);
+			if (!bn_is_less(&ws->b, &inout->curve->params->order)) { // >= order
 				failed = true;
 			} else {
-				bn_add(&b, &a);
-				bn_mod(&b, &inout->curve->params->order);
-				if (bn_is_zero(&b)) {
+				bn_add(&ws->b, &ws->a);
+				bn_mod(&ws->b, &inout->curve->params->order);
+				if (bn_is_zero(&ws->b)) {
 					failed = true;
 				}
 			}
 
 			if (!failed) {
-				bn_write_be(&b, inout->private_key);
+				bn_write_be(&ws->b, inout->private_key);
 				break;
 			}
 
-			data[0] = 1;
-			memcpy(data + 1, I + 32, 32);
-			hmac_sha512_Init(&ctx, inout->chain_code, 32);
-			hmac_sha512_Update(&ctx, data, sizeof(data));
-			hmac_sha512_Final(&ctx, I);
+			ws->data[0] = 1;
+			memcpy(ws->data + 1, ws->I + 32, 32);
+			hmac_sha512_Init(&ws->ctx, inout->chain_code, 32);
+			hmac_sha512_Update(&ws->ctx, ws->data, sizeof(ws->data));
+			hmac_sha512_Final(&ws->ctx, ws->I);
 		}
 	} else {
-		memcpy(inout->private_key, I, 32);
+		memcpy(inout->private_key, ws->I, 32);
 	}
 
-	memcpy(inout->chain_code, I + 32, 32);
+	memcpy(inout->chain_code, ws->I + 32, 32);
 	inout->depth++;
 	inout->child_num = i;
 	memzero(inout->public_key, sizeof(inout->public_key));
+	result = 1;
 
+cleanup:
 	// making sure to wipe our memory
-	memzero(&a, sizeof(a));
-	memzero(&b, sizeof(b));
-	memzero(I, sizeof(I));
-	memzero(data, sizeof(data));
-	return 1;
+	memzero(ws, sizeof(*ws));
+	free(ws);
+	return result;
 }
 
 int hdnode_public_ckd_cp(const ecdsa_curve *curve, const curve_point *parent, const uint8_t *parent_chain_code, uint32_t i, curve_point *child, uint8_t *child_chain_code) {

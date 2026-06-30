@@ -23,6 +23,14 @@
 
 #include <string.h>
 #include <stdbool.h>
+#include <stdlib.h>
+
+#ifdef ESP_PLATFORM
+#include "esp_heap_caps.h"
+#define PSRAM_ALLOC(size) heap_caps_malloc(size, MALLOC_CAP_SPIRAM)
+#else
+#define PSRAM_ALLOC(size) malloc(size)
+#endif
 
 #include "bip39.h"
 #include "hmac.h"
@@ -228,6 +236,13 @@ int mnemonic_check(const char *mnemonic)
 	return 0;
 }
 
+// Per-call work buffers for mnemonic_to_seed, moved off the (formerly static)
+// .bss into a single PSRAM allocation that is memzero'd + freed on every exit.
+// pctx holds PBKDF2-HMAC-SHA512 seed-derivation state = SECRET.
+typedef struct {
+	PBKDF2_HMAC_SHA512_CTX pctx;
+} mnemonic_to_seed_ws_t;
+
 // passphrase must be at most 256 characters or code may crash
 void mnemonic_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed[512 / 8], void (*progress_callback)(uint32_t current, uint32_t total))
 {
@@ -249,18 +264,23 @@ void mnemonic_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed
 	uint8_t salt[8 + 256];
 	memcpy(salt, "mnemonic", 8);
 	memcpy(salt + 8, passphrase, passphraselen);
-	static CONFIDENTIAL PBKDF2_HMAC_SHA512_CTX pctx;
-	pbkdf2_hmac_sha512_Init(&pctx, (const uint8_t *)mnemonic, strlen(mnemonic), salt, passphraselen + 8);
+	mnemonic_to_seed_ws_t *ws = (mnemonic_to_seed_ws_t *)PSRAM_ALLOC(sizeof(mnemonic_to_seed_ws_t));
+	if (!ws) {
+		memzero(salt, sizeof(salt));
+		memzero(seed, 512 / 8);
+		return;
+	}
+	pbkdf2_hmac_sha512_Init(&ws->pctx, (const uint8_t *)mnemonic, strlen(mnemonic), salt, passphraselen + 8);
 	if (progress_callback) {
 		progress_callback(0, BIP39_PBKDF2_ROUNDS);
 	}
 	for (int i = 0; i < 16; i++) {
-		pbkdf2_hmac_sha512_Update(&pctx, BIP39_PBKDF2_ROUNDS / 16);
+		pbkdf2_hmac_sha512_Update(&ws->pctx, BIP39_PBKDF2_ROUNDS / 16);
 		if (progress_callback) {
 			progress_callback((i + 1) * BIP39_PBKDF2_ROUNDS / 16, BIP39_PBKDF2_ROUNDS);
 		}
 	}
-	pbkdf2_hmac_sha512_Final(&pctx, seed);
+	pbkdf2_hmac_sha512_Final(&ws->pctx, seed);
 	memzero(salt, sizeof(salt));
 #if USE_BIP39_CACHE
 	// store to cache
@@ -272,6 +292,8 @@ void mnemonic_to_seed(const char *mnemonic, const char *passphrase, uint8_t seed
 		bip39_cache_index = (bip39_cache_index + 1) % BIP39_CACHE_SIZE;
 	}
 #endif
+	memzero(ws, sizeof(*ws));
+	free(ws);
 }
 
 const char * const *mnemonic_wordlist(void)
