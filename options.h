@@ -51,8 +51,12 @@
 #endif
 
 // implement BIP39 caching
+// Openloop SECURITY: cache DISABLED. USE_BIP39_CACHE=1 kept the plaintext
+// mnemonic + the 64-byte master seed resident in a .bss cache for the whole
+// boot (RAM remanence recoverable via coredump/glitch/reboot). The wallet
+// derives the seed once at create/restore, so the cache buys nothing.
 #ifndef USE_BIP39_CACHE
-#define USE_BIP39_CACHE 1
+#define USE_BIP39_CACHE 0
 #define BIP39_CACHE_SIZE 4
 #endif
 

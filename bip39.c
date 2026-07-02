@@ -188,6 +188,7 @@ int mnemonic_check(const char *mnemonic)
 	char current_word[10];
 	uint32_t j, k, ki, bi;
 	uint8_t bits[32 + 1];
+	int result = 0;  /* single-exit so current_word/bits are always wiped */
 
 	memzero(bits, sizeof(bits));
 	i = 0; bi = 0;
@@ -195,7 +196,7 @@ int mnemonic_check(const char *mnemonic)
 		j = 0;
 		while (mnemonic[i] != ' ' && mnemonic[i] != 0) {
 			if (j >= sizeof(current_word) - 1) {
-				return 0;
+				goto done;
 			}
 			current_word[j] = mnemonic[i];
 			i++; j++;
@@ -205,7 +206,7 @@ int mnemonic_check(const char *mnemonic)
 		k = 0;
 		for (;;) {
 			if (!wordlist[k]) { // word not found
-				return 0;
+				goto done;
 			}
 			if (strcmp(current_word, wordlist[k]) == 0) { // word found on index k
 				for (ki = 0; ki < 11; ki++) {
@@ -220,20 +221,23 @@ int mnemonic_check(const char *mnemonic)
 		}
 	}
 	if (bi != n * 11) {
-		return 0;
+		goto done;
 	}
 	bits[32] = bits[n * 4 / 3];
 	sha256_Raw(bits, n * 4 / 3, bits);
 	if (n == 12) {
-		return (bits[0] & 0xF0) == (bits[32] & 0xF0); // compare first 4 bits
+		result = (bits[0] & 0xF0) == (bits[32] & 0xF0); // compare first 4 bits
 	} else
 	if (n == 18) {
-		return (bits[0] & 0xFC) == (bits[32] & 0xFC); // compare first 6 bits
+		result = (bits[0] & 0xFC) == (bits[32] & 0xFC); // compare first 6 bits
 	} else
 	if (n == 24) {
-		return bits[0] == bits[32]; // compare 8 bits
+		result = bits[0] == bits[32]; // compare 8 bits
 	}
-	return 0;
+done:
+	memzero(bits, sizeof(bits));
+	memzero(current_word, sizeof(current_word));
+	return result;
 }
 
 // Per-call work buffers for mnemonic_to_seed, moved off the (formerly static)
